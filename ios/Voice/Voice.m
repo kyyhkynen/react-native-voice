@@ -1,6 +1,7 @@
 #import "Voice.h"
 #import <React/RCTLog.h>
 #import <UIKit/UIKit.h>
+#import <Accelerate/Accelerate.h>
 #import <React/RCTUtils.h>
 #import <React/RCTEventEmitter.h>
 #import <Speech/Speech.h>
@@ -13,6 +14,8 @@
 @property (nonatomic) SFSpeechRecognitionTask* recognitionTask;
 @property (nonatomic) AVAudioSession* audioSession;
 @property (nonatomic) NSString *sessionId;
+@property (nonatomic) NSMutableArray* audioSamplesBase64;
+
 @end
 
 @implementation Voice
@@ -22,7 +25,7 @@
 - (void) setupAndStartRecognizing:(NSString*)localeStr {
     [self teardown];
     self.sessionId = [[NSUUID UUID] UUIDString];
-    
+
     NSLocale* locale = nil;
     if ([localeStr length] > 0) {
         locale = [NSLocale localeWithLocaleIdentifier:localeStr];
@@ -61,6 +64,8 @@
         return;
     }
 
+    self.audioSamplesBase64 = [[NSMutableArray alloc] init];
+    
     // Configure request so that results are returned before audio recording is finished
     self.recognitionRequest.shouldReportPartialResults = YES;
 
@@ -92,17 +97,23 @@
 
         if (isFinal == YES) {
             if (self.recognitionTask.isCancelled || self.recognitionTask.isFinishing){
-                [self sendEventWithName:@"onSpeechEnd" body:@{@"error": @false}];
+                NSString* fullAudioBase64 =  [self.audioSamplesBase64 componentsJoinedByString:@""];
+                [self sendEventWithName:@"onSpeechEnd" body:@{@"error": @false, @"base64": fullAudioBase64 }];
             }
             [self teardown];
         }
     }];
 
     AVAudioFormat* recordingFormat = [inputNode outputFormatForBus:0];
+    //NSLog(@"format: %@", recordingFormat.formatDescription);
 
     [inputNode installTapOnBus:0 bufferSize:1024 format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
         if (self.recognitionRequest != nil) {
+            [self appendAudioBase64:buffer];
+            [self getSamplesForVisualization:buffer];
             [self.recognitionRequest appendAudioPCMBuffer:buffer];
+            
+            
         }
     }];
 
@@ -113,6 +124,47 @@
         return;
     }
 }
+- (void) getSamplesForVisualization:(AVAudioPCMBuffer *)buffer {
+    int numSamples = 1024;
+    
+    /*
+     vDSP_Length log2n = log2f(numSamples);
+     FFTSetup fftSetup = vDSP_create_fftsetup(log2n, FFT_RADIX2);
+     
+     DSPSplitComplex output = {
+        .realp = buffer.floatChannelData[0],
+        .imagp = buffer.floatChannelData[1]
+     };
+     
+     vDSP_fft_zrip(fftSetup, &output, 1, log2n, FFT_FORWARD);
+     
+     vDSP_destroy_fftsetup(fftSetup);
+     */
+    
+    NSMutableArray * meanSamples = [NSMutableArray arrayWithCapacity:8];
+    for (int i = 0; i < 8; i++) {
+        //meanSamples[i] = 0.0;
+        float sample = 0.0;
+        vDSP_meanv(buffer.floatChannelData[0] + i * 128, 1, &sample, 128);
+        //printf("%f ", sample);
+        [meanSamples addObject:[NSNumber numberWithFloat:sample]];
+    }
+    
+    [self sendEventWithName:@"onSpeechSample" body:@{@"value": meanSamples}];
+    meanSamples = nil;
+}
+
+- (void) appendAudioBase64:(AVAudioPCMBuffer *)buffer {
+    NSString *base64Sample = [self base64Audio:buffer];
+    [self.audioSamplesBase64 addObject:base64Sample];
+    //[self sendEventWithName:@"onSpeechPartialAudio" body:@{@"base64": base64Sample}];
+}
+
+- (NSString *) base64Audio:(AVAudioPCMBuffer *)buffer {
+    NSData* bufferData = [[NSData alloc] initWithBytes:buffer.floatChannelData[0] length:buffer.frameLength * 4];
+    NSString *base64String = [bufferData base64EncodedStringWithOptions:0];
+    return base64String;
+}
 
 - (NSArray<NSString *> *)supportedEvents
 {
@@ -120,6 +172,7 @@
         @"onSpeechResults",
         @"onSpeechStart",
         @"onSpeechPartialResults",
+        @"onSpeechSample",
         @"onSpeechError",
         @"onSpeechEnd",
         @"onSpeechRecognized",
@@ -147,7 +200,7 @@
     self.recognitionTask = nil;
     self.audioSession = nil;
     self.sessionId = nil;
-    
+
     if (self.audioEngine.isRunning) {
         [self.audioEngine stop];
         [self.recognitionRequest endAudio];
@@ -155,6 +208,7 @@
     }
 
     self.recognitionRequest = nil;
+    self.audioSamplesBase64 = nil;
 }
 
 // Called when the availability of the given recognizer changes
