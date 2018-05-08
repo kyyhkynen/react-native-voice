@@ -21,6 +21,7 @@ class RCTVoice {
       'onSpeechError': this._onSpeechError.bind(this),
       'onSpeechResults': this._onSpeechResults.bind(this),
       'onSpeechPartialResults': this._onSpeechPartialResults.bind(this),
+      'onSpeechSample': this._onSpeechSample.bind(this),
       'onSpeechVolumeChanged': this._onSpeechVolumeChanged.bind(this)
     };
   }
@@ -31,6 +32,7 @@ class RCTVoice {
     Voice.onSpeechError = null;
     Voice.onSpeechResults = null;
     Voice.onSpeechPartialResults = null;
+    Voice.onSpeechSample = null;
     Voice.onSpeechVolumeChanged = null;
   }
   destroy() {
@@ -149,6 +151,11 @@ class RCTVoice {
   _onSpeechPartialResults(e) {
     if (this.onSpeechPartialResults) {
       this.onSpeechPartialResults(e);
+    }
+  }
+  _onSpeechSample(e) {
+    if (this.onSpeechSample) {
+      this.onSpeechSample(e);
     }
   }
   _onSpeechVolumeChanged(e) {
