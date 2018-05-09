@@ -104,7 +104,13 @@
         }
     }];
 
-    AVAudioFormat* recordingFormat = [inputNode outputFormatForBus:0];
+    //AVAudioFormat* recordingFormat = [inputNode outputFormatForBus:0];
+    AVAudioChannelLayout *chLayout = [[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_Stereo];
+    AVAudioFormat *recordingFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
+                                                            sampleRate:44100.0
+                                                            interleaved:NO
+                                                            channelLayout:chLayout];
+    
     //NSLog(@"format: %@", recordingFormat.formatDescription);
 
     [inputNode installTapOnBus:0 bufferSize:1024 format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
@@ -125,29 +131,14 @@
     }
 }
 - (void) getSamplesForVisualization:(AVAudioPCMBuffer *)buffer {
-    int numSamples = 1024;
-    
-    /*
-     vDSP_Length log2n = log2f(numSamples);
-     FFTSetup fftSetup = vDSP_create_fftsetup(log2n, FFT_RADIX2);
-     
-     DSPSplitComplex output = {
-        .realp = buffer.floatChannelData[0],
-        .imagp = buffer.floatChannelData[1]
-     };
-     
-     vDSP_fft_zrip(fftSetup, &output, 1, log2n, FFT_FORWARD);
-     
-     vDSP_destroy_fftsetup(fftSetup);
-     */
-    
     NSMutableArray * meanSamples = [NSMutableArray arrayWithCapacity:8];
     for (int i = 0; i < 8; i++) {
-        //meanSamples[i] = 0.0;
-        float sample = 0.0;
-        vDSP_meanv(buffer.floatChannelData[0] + i * 128, 1, &sample, 128);
-        //printf("%f ", sample);
-        [meanSamples addObject:[NSNumber numberWithFloat:sample]];
+        float tot = 0.0;
+        for (int j = 0; j < 128; j++) {
+            tot += [[NSNumber numberWithShort:*(buffer.int16ChannelData[0] + i * 128 + j)] floatValue];
+        }
+        [meanSamples addObject:[NSNumber numberWithFloat:tot / 128]];
+         
     }
     
     [self sendEventWithName:@"onSpeechSample" body:@{@"value": meanSamples}];
@@ -161,7 +152,7 @@
 }
 
 - (NSString *) base64Audio:(AVAudioPCMBuffer *)buffer {
-    NSData* bufferData = [[NSData alloc] initWithBytes:buffer.floatChannelData[0] length:buffer.frameLength * 4];
+    NSData* bufferData = [[NSData alloc] initWithBytes:buffer.int16ChannelData[0] length:buffer.frameLength * 4];
     NSString *base64String = [bufferData base64EncodedStringWithOptions:0];
     return base64String;
 }
