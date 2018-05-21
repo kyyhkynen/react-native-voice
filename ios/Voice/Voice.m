@@ -204,8 +204,6 @@ OSStatus audioConverterCallback(AudioConverterRef aAudioConverter, UInt32* ioDat
     meanSamples = nil;
 }
 
-}
-
 - (NSArray<NSString *> *)supportedEvents
 {
     return @[
