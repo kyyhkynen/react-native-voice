@@ -6,6 +6,15 @@
 #import <React/RCTEventEmitter.h>
 #import <Speech/Speech.h>
 
+
+OSStatus audioConverterCallback(AudioConverterRef aAudioConverter, UInt32* ioDataPacketCount, AudioBufferList* ioData, AudioStreamPacketDescription** outDataPacketDescription, void* inUserData)
+{
+    AudioBufferList inputBufferList = *(AudioBufferList *)inUserData;
+    *ioData = inputBufferList;
+    *ioDataPacketCount = (UInt32)(inputBufferList.mBuffers[0].mDataByteSize/2);
+    return noErr;
+}
+
 @interface Voice () <SFSpeechRecognizerDelegate>
 
 @property (nonatomic) SFSpeechRecognizer* speechRecognizer;
@@ -14,7 +23,7 @@
 @property (nonatomic) SFSpeechRecognitionTask* recognitionTask;
 @property (nonatomic) AVAudioSession* audioSession;
 @property (nonatomic) NSString *sessionId;
-@property (nonatomic) NSMutableArray* audioSamplesBase64;
+@property (nonatomic) NSMutableData* audioSample;
 
 @end
 
@@ -64,7 +73,7 @@
         return;
     }
 
-    self.audioSamplesBase64 = [[NSMutableArray alloc] init];
+    self.audioSample = [[NSMutableData alloc] init];
     
     // Configure request so that results are returned before audio recording is finished
     self.recognitionRequest.shouldReportPartialResults = YES;
@@ -97,31 +106,80 @@
 
         if (isFinal == YES) {
             if (self.recognitionTask.isCancelled || self.recognitionTask.isFinishing){
-                NSString* fullAudioBase64 =  [self.audioSamplesBase64 componentsJoinedByString:@""];
-                [self sendEventWithName:@"onSpeechEnd" body:@{@"error": @false, @"base64": fullAudioBase64 }];
+                [self sendEventWithName:@"onSpeechEnd" body:@{@"error": @false, @"base64": [self.audioSample base64EncodedStringWithOptions:0] }];
             }
             [self teardown];
         }
     }];
 
-    //AVAudioFormat* recordingFormat = [inputNode outputFormatForBus:0];
-    AVAudioChannelLayout *chLayout = [[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_Stereo];
+    //AVAudioFormat *recordingFormat = [inputNode outputFormatForBus:0];
+    AVAudioChannelLayout *recordingChLayout = [[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_Mono];
     AVAudioFormat *recordingFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
                                                             sampleRate:44100.0
                                                             interleaved:NO
-                                                            channelLayout:chLayout];
+                                                            channelLayout:recordingChLayout];
     
-    //NSLog(@"format: %@", recordingFormat.formatDescription);
+    
+    AVAudioChannelLayout *outputChLayout = [[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_Mono];
+    AVAudioFormat *outputFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
+                                                            sampleRate:16000.0
+                                                            interleaved:NO
+                                                            channelLayout:outputChLayout];
+    
+    int bufferSize = 1024;
 
-    [inputNode installTapOnBus:0 bufferSize:1024 format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
+    [inputNode installTapOnBus:0 bufferSize:bufferSize format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
+        
         if (self.recognitionRequest != nil) {
-            [self appendAudioBase64:buffer];
+            
+            AudioStreamBasicDescription *inputDescription = [recordingFormat streamDescription];
+            AudioStreamBasicDescription *outputDescription = [outputFormat streamDescription];
+            AudioConverterRef audioConverter;
+            OSStatus acCreationResult = AudioConverterNew(inputDescription, outputDescription, &audioConverter);
+            if(!audioConverter)
+            {
+                NSLog(@"error creating audioconverter; %d", (int)acCreationResult);
+            }
+            
+            AudioBufferList inputBufferList = {0};
+            inputBufferList.mNumberBuffers = 1;
+            inputBufferList.mBuffers[0].mNumberChannels = 1;
+            inputBufferList.mBuffers[0].mDataByteSize = [buffer audioBufferList]->mBuffers[0].mDataByteSize;
+            inputBufferList.mBuffers[0].mData = buffer.int16ChannelData[0];
+
+            // 2.75625f = 44100 / 16000
+            UInt32 outputBufferByteSize = (UInt32)(inputBufferList.mBuffers[0].mDataByteSize/2.75625f);
+            UInt8 *outputBuffer = (UInt8 *)malloc(sizeof(UInt8) * outputBufferByteSize);
+            
+            UInt32 ioOutputDataPackets = (UInt32)outputBufferByteSize / outputDescription->mBytesPerPacket;
+            
+            AudioBufferList outputBufferList;
+            outputBufferList.mNumberBuffers = 1;
+            outputBufferList.mBuffers[0].mNumberChannels = outputDescription->mChannelsPerFrame;
+            outputBufferList.mBuffers[0].mDataByteSize = outputBufferByteSize;
+            outputBufferList.mBuffers[0].mData = outputBuffer;
+            
+            OSStatus conversionResult = AudioConverterFillComplexBuffer(audioConverter,
+                                                              audioConverterCallback,
+                                                              &inputBufferList,
+                                                              &ioOutputDataPackets,
+                                                              &outputBufferList,
+                                                              NULL
+                                                              );
+            if (conversionResult != noErr) {
+                NSLog(@"audioconverter error; %d", (int)conversionResult);
+            }
+            AudioConverterDispose(audioConverter);
+
+            [self.audioSample appendBytes:outputBufferList.mBuffers[0].mData length:outputBufferList.mBuffers[0].mDataByteSize];
             [self getSamplesForVisualization:buffer];
+            
             [self.recognitionRequest appendAudioPCMBuffer:buffer];
-            
-            
         }
     }];
+    
+
+
 
     [self.audioEngine prepare];
     [self.audioEngine startAndReturnError:&audioSessionError];
@@ -130,6 +188,7 @@
         return;
     }
 }
+
 - (void) getSamplesForVisualization:(AVAudioPCMBuffer *)buffer {
     NSMutableArray * meanSamples = [NSMutableArray arrayWithCapacity:8];
     for (int i = 0; i < 8; i++) {
@@ -145,16 +204,6 @@
     meanSamples = nil;
 }
 
-- (void) appendAudioBase64:(AVAudioPCMBuffer *)buffer {
-    NSString *base64Sample = [self base64Audio:buffer];
-    [self.audioSamplesBase64 addObject:base64Sample];
-    //[self sendEventWithName:@"onSpeechPartialAudio" body:@{@"base64": base64Sample}];
-}
-
-- (NSString *) base64Audio:(AVAudioPCMBuffer *)buffer {
-    NSData* bufferData = [[NSData alloc] initWithBytes:buffer.int16ChannelData[0] length:buffer.frameLength * 4];
-    NSString *base64String = [bufferData base64EncodedStringWithOptions:0];
-    return base64String;
 }
 
 - (NSArray<NSString *> *)supportedEvents
@@ -193,13 +242,14 @@
     self.sessionId = nil;
 
     if (self.audioEngine.isRunning) {
+        [self.audioEngine.inputNode removeTapOnBus:0];
+        [self.audioEngine.inputNode reset];
         [self.audioEngine stop];
         [self.recognitionRequest endAudio];
-        [self.audioEngine.inputNode removeTapOnBus:0];
     }
 
     self.recognitionRequest = nil;
-    self.audioSamplesBase64 = nil;
+    self.audioSample = nil;
 }
 
 // Called when the availability of the given recognizer changes
