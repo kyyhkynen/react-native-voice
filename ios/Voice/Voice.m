@@ -122,7 +122,7 @@ OSStatus audioConverterCallback(AudioConverterRef aAudioConverter, UInt32* ioDat
     
     AVAudioChannelLayout *outputChLayout = [[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_Mono];
     AVAudioFormat *outputFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16
-                                                            sampleRate:16000.0
+                                                            sampleRate:8000.0
                                                             interleaved:NO
                                                             channelLayout:outputChLayout];
     
@@ -147,8 +147,8 @@ OSStatus audioConverterCallback(AudioConverterRef aAudioConverter, UInt32* ioDat
             inputBufferList.mBuffers[0].mDataByteSize = [buffer audioBufferList]->mBuffers[0].mDataByteSize;
             inputBufferList.mBuffers[0].mData = buffer.int16ChannelData[0];
 
-            // 2.75625f = 44100 / 16000
-            UInt32 outputBufferByteSize = (UInt32)(inputBufferList.mBuffers[0].mDataByteSize/2.75625f);
+            // 5.5125f = 44100 / 8000
+            UInt32 outputBufferByteSize = (UInt32)(inputBufferList.mBuffers[0].mDataByteSize/5.5125f);
             UInt8 *outputBuffer = (UInt8 *)malloc(sizeof(UInt8) * outputBufferByteSize);
             
             UInt32 ioOutputDataPackets = (UInt32)outputBufferByteSize / outputDescription->mBytesPerPacket;
